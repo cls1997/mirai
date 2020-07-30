@@ -27,7 +27,7 @@ sealed class LoginFailedException constructor(
 ) : RuntimeException(message, cause)
 
 /**
- * 密码输入错误
+ * 密码输入错误 (有时候也会是其他错误, 如 `"当前上网环境异常，请更换网络环境或在常用设备上登录或稍后再试。"`)
  */
 class WrongPasswordException(message: String?) : LoginFailedException(true, message)
 
@@ -45,7 +45,7 @@ class NoStandardInputForCaptchaException(override val cause: Throwable?) :
 /**
  * 需要短信验证时抛出. mirai 目前还不支持短信验证.
  */
-@MiraiExperimentalAPI
+@MiraiExperimentalAPI("Will be removed when SMS login is supported")
 class UnsupportedSMSLoginException(message: String?) : LoginFailedException(true, message)
 
 /**

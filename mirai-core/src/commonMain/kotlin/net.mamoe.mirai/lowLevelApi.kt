@@ -13,6 +13,9 @@ import kotlinx.coroutines.Job
 import net.mamoe.mirai.contact.Friend
 import net.mamoe.mirai.contact.Group
 import net.mamoe.mirai.data.*
+import net.mamoe.mirai.event.events.BotInvitedJoinGroupRequestEvent
+import net.mamoe.mirai.event.events.MemberJoinRequestEvent
+import net.mamoe.mirai.event.events.NewFriendRequestEvent
 import net.mamoe.mirai.utils.MiraiExperimentalAPI
 import net.mamoe.mirai.utils.WeakRef
 
@@ -30,6 +33,10 @@ annotation class LowLevelAPI
 
 /**
  * [Bot] 相关协议层低级 API.
+ *
+ * **注意**: 不应该把这个类作为一个类型, 只应使用其中的方法
+ *
+ * **警告**: 所有的低级 API 都可能在任意时刻不经过任何警告和迭代就被修改. 因此非常不建议在任何情况下使用这些 API.
  */
 @MiraiExperimentalAPI
 @Suppress("FunctionName", "unused")
@@ -105,8 +112,51 @@ interface LowLevelBotAPIAccessor {
 
     /**
      * 获取群活跃信息
+     * 不传page可得到趋势图
+     * page从0开始传入可以得到发言列表
      */
     @LowLevelAPI
     @MiraiExperimentalAPI
-    suspend fun _lowLevelGetGroupActiveData(groupId: Long): GroupActiveData
+    suspend fun _lowLevelGetGroupActiveData(groupId: Long, page: Int = -1): GroupActiveData
+
+
+    /**
+     * 处理一个账号请求添加机器人为好友的事件
+     */
+    @LowLevelAPI
+    @MiraiExperimentalAPI
+    suspend fun _lowLevelSolveNewFriendRequestEvent(
+        eventId: Long,
+        fromId: Long,
+        fromNick: String,
+        accept: Boolean,
+        blackList: Boolean
+    )
+
+    /**
+     * 处理被邀请加入一个群请求事件
+     */
+    @LowLevelAPI
+    @MiraiExperimentalAPI
+    suspend fun _lowLevelSolveBotInvitedJoinGroupRequestEvent(
+        eventId: Long,
+        invitorId: Long,
+        groupId: Long,
+        accept: Boolean
+    )
+
+    /**
+     * 处理账号请求加入群事件
+     */
+    @LowLevelAPI
+    @MiraiExperimentalAPI
+    suspend fun _lowLevelSolveMemberJoinRequestEvent(
+        eventId: Long,
+        fromId: Long,
+        fromNick: String,
+        groupId: Long,
+        accept: Boolean?,
+        blackList: Boolean,
+        message: String = ""
+    )
 }

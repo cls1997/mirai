@@ -11,6 +11,7 @@
 
 package net.mamoe.mirai.qqandroid.utils
 
+import kotlinx.serialization.Transient
 import net.mamoe.mirai.utils.DefaultLogger
 import net.mamoe.mirai.utils.debug
 import kotlin.reflect.KClass
@@ -142,6 +143,22 @@ private val KProperty1<*, *>.isConst: Boolean
 private val KClass<*>.isData: Boolean
     get() = false // on JVM, it will be resolved to member function
 
+private fun Any.canBeIgnored(): Boolean {
+    return when (this) {
+        is String -> this.isEmpty()
+        is ByteArray -> this.isEmpty()
+        is Array<*> -> this.isEmpty()
+        is Number -> this == 0
+        is Int -> this == 0
+        is Float -> this == 0
+        is Double -> this == 0
+        is Byte -> this == 0
+        is Short -> this == 0
+        is Long -> this == 0
+        else -> false
+    }
+}
+
 private fun Any.contentToStringReflectively(
     prefix: String,
     filter: ((name: String, value: Any?) -> Boolean)? = null
@@ -165,11 +182,14 @@ private fun Any.contentToStringReflectively(
                 .joinToStringPrefixed(
                     prefix = newPrefix
                 ) { (name: String, value: Any?) ->
-                    "$name=" + kotlin.runCatching {
-                        if (value == this) "<this>"
-                        else value._miraiContentToString(newPrefix)
-                    }.getOrElse { "<!>" }
-                } + "\n$prefix}"
+                    if (value.canBeIgnored()) ""
+                    else {
+                        "$name=" + kotlin.runCatching {
+                            if (value == this) "<this>"
+                            else value._miraiContentToString(newPrefix)
+                        }.getOrElse { "<!>" }
+                    }
+                }.lines().filterNot { it.isBlank() }.joinToString("\n") + "\n$prefix}"
 }
 
 // on JVM, it will be resolved to member function
@@ -197,5 +217,13 @@ private fun Any.allMembersFromSuperClassesMatching(classFilter: (KClass<out Any>
         .map { it.members }
         .flatMap { it.asSequence() }
         .filterIsInstance<KProperty1<*, *>>()
+        .filterNot { it.hasAnnotation<Transient>() }
+        .filterNot { it.isTransient() }
         .mapNotNull { it as KProperty1<Any, *> }
 }
+
+@Suppress("EXTENSION_SHADOWED_BY_MEMBER")
+internal expect inline fun <reified T : Annotation> KProperty<*>.hasAnnotation(): Boolean
+
+@Suppress("EXTENSION_SHADOWED_BY_MEMBER")
+internal expect fun KProperty<*>.isTransient(): Boolean

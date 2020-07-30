@@ -14,7 +14,6 @@
 package net.mamoe.mirai.message.data
 
 import net.mamoe.mirai.utils.PlannedRemoval
-import net.mamoe.mirai.utils.SinceMirai
 import kotlin.jvm.JvmMultifileClass
 import kotlin.jvm.JvmName
 import kotlin.jvm.JvmSynthetic
@@ -25,14 +24,13 @@ import kotlin.jvm.JvmSynthetic
  * 一般不需要主动构造 [PlainText], [Message] 可直接与 [String] 相加. Java 用户请使用 [Message.plus]
  */
 data class PlainText(
-    @SinceMirai("1.0.0")
     val content: String
 ) : MessageContent {
 
     @PlannedRemoval("1.2.0")
     @Deprecated(
         "use content instead for clearer semantics",
-        level = DeprecationLevel.WARNING,
+        level = DeprecationLevel.ERROR,
         replaceWith = ReplaceWith("content")
     )
     val stringValue: String

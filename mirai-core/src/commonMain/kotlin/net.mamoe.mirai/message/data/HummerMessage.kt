@@ -13,10 +13,11 @@
 
 package net.mamoe.mirai.message.data
 
+import net.mamoe.mirai.message.code.CodableMessage
 import net.mamoe.mirai.message.data.PokeMessage.Types
 import net.mamoe.mirai.message.data.VipFace.Companion
-import net.mamoe.mirai.utils.MiraiExperimentalAPI
-import net.mamoe.mirai.utils.MiraiInternalAPI
+import net.mamoe.mirai.message.data.VipFace.Kind
+import net.mamoe.mirai.utils.PlannedRemoval
 import kotlin.jvm.*
 
 /**
@@ -40,9 +41,11 @@ sealed class HummerMessage : MessageContent {
 /**
  * 戳一戳. 可以发送给好友或群.
  *
+ * ## mirai 码支持
+ * 格式: &#91;mirai:poke:*[name]*,*[type]*,*[id]*&#93;
+ *
  * @see Types 使用伴生对象中的常量
  */
-@OptIn(MiraiInternalAPI::class)
 data class PokeMessage internal constructor(
     /**
      * 仅 mirai, 显示的名称
@@ -51,7 +54,7 @@ data class PokeMessage internal constructor(
 
     val type: Int,
     val id: Int
-) : HummerMessage() {
+) : HummerMessage(), CodableMessage {
     @Suppress("DEPRECATION_ERROR", "DEPRECATION", "INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
     companion object Types : Message.Key<PokeMessage> {
         override val typeName: String
@@ -133,8 +136,8 @@ data class PokeMessage internal constructor(
         )
     }
 
-    @OptIn(MiraiExperimentalAPI::class)
-    private val stringValue = "[mirai:poke:$type,$id]"
+
+    private val stringValue = "[mirai:poke:$name,$type,$id]"
 
     override fun toString(): String = stringValue
     override fun contentToString(): String = "[戳一戳]"
@@ -153,20 +156,26 @@ data class PokeMessage internal constructor(
  *
  * 不支持发送.
  *
+ * ## mirai 码支持
+ * 格式: &#91;mirai:vipface:*[Kind.id]*,*[Kind.name]*,*[count]*&#93;
+ *
  * @see Types 使用伴生对象中的常量
  */
-@OptIn(MiraiInternalAPI::class)
 data class VipFace internal constructor(
     /**
      * 使用 [Companion] 中常量.
      */
     val kind: Kind,
     val count: Int
-) : HummerMessage() {
+) : HummerMessage(), CodableMessage {
     data class Kind(
         val id: Int,
         val name: String
-    )
+    ) {
+        override fun toString(): String {
+            return "$id,$name"
+        }
+    }
 
     @Suppress("DEPRECATION_ERROR", "DEPRECATION", "INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
     companion object : Message.Key<VipFace> {
@@ -217,7 +226,7 @@ data class VipFace internal constructor(
         private infix fun Int.to(name: String): Kind = Kind(this, name)
     }
 
-    @OptIn(MiraiExperimentalAPI::class)
+
     private val stringValue = "[mirai:vipface:$kind,$count]"
 
     override fun toString(): String = stringValue
@@ -233,11 +242,14 @@ data class VipFace internal constructor(
 /**
  * 闪照
  *
+ * ## mirai 码支持
+ * 格式: &#91;mirai:flash:*[Image.imageId]*&#93;
+ *
  * @see Image.flash 转换普通图片为闪照
  *
  * @see Image 查看图片相关信息
  */
-sealed class FlashImage : MessageContent, HummerMessage() {
+sealed class FlashImage : MessageContent, HummerMessage(), CodableMessage {
     companion object Key : Message.Key<FlashImage> {
         /**
          * 将普通图片转换为闪照.
@@ -245,7 +257,7 @@ sealed class FlashImage : MessageContent, HummerMessage() {
         @JvmStatic
         @JvmName("from")
         operator fun invoke(image: Image): FlashImage {
-            @OptIn(MiraiInternalAPI::class)
+
             return when (image) {
                 is GroupImage -> GroupFlashImage(image)
                 is FriendImage -> FriendFlashImage(image)
@@ -281,7 +293,7 @@ sealed class FlashImage : MessageContent, HummerMessage() {
             }
         }
 
-    override fun toString(): String = stringValue!!
+    final override fun toString(): String = stringValue!!
     override fun contentToString(): String = "[闪照]"
 }
 inline fun Image.flash(): FlashImage = FlashImage(this)

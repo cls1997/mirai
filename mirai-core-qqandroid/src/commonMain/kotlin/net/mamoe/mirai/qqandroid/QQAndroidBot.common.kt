@@ -17,13 +17,11 @@ import io.ktor.client.request.forms.MultiPartFormDataContent
 import io.ktor.client.request.forms.formData
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.async
-import kotlinx.coroutines.io.ByteReadChannel
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.UnstableDefault
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonConfiguration
 import kotlinx.serialization.json.int
-import net.mamoe.mirai.*
+import net.mamoe.mirai.Bot
+import net.mamoe.mirai.LowLevelAPI
 import net.mamoe.mirai.contact.*
 import net.mamoe.mirai.data.*
 import net.mamoe.mirai.event.broadcast
@@ -32,6 +30,7 @@ import net.mamoe.mirai.event.events.MemberJoinRequestEvent
 import net.mamoe.mirai.event.events.MessageRecallEvent
 import net.mamoe.mirai.event.events.NewFriendRequestEvent
 import net.mamoe.mirai.event.internal.MiraiAtomicBoolean
+import net.mamoe.mirai.getGroupOrNull
 import net.mamoe.mirai.message.MessageReceipt
 import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.network.LoginFailedException
@@ -52,15 +51,14 @@ import net.mamoe.mirai.qqandroid.utils.encodeToString
 import net.mamoe.mirai.qqandroid.utils.io.serialization.toByteArray
 import net.mamoe.mirai.utils.*
 import kotlin.collections.asSequence
-import kotlin.contracts.ExperimentalContracts
 import kotlin.contracts.contract
 import kotlin.coroutines.CoroutineContext
+import kotlin.jvm.JvmField
 import kotlin.jvm.JvmSynthetic
 import kotlin.math.absoluteValue
 import kotlin.random.Random
 import net.mamoe.mirai.qqandroid.network.protocol.data.jce.FriendInfo as JceFriendInfo
 
-@OptIn(ExperimentalContracts::class)
 internal fun Bot.asQQAndroidBot(): QQAndroidBot {
     contract {
         returns() implies (this@asQQAndroidBot is QQAndroidBot)
@@ -69,8 +67,7 @@ internal fun Bot.asQQAndroidBot(): QQAndroidBot {
     return this as QQAndroidBot
 }
 
-@Suppress("INVISIBLE_MEMBER", "BooleanLiteralArgument")
-@OptIn(MiraiInternalAPI::class)
+@Suppress("INVISIBLE_MEMBER", "BooleanLiteralArgument", "OverridingDeprecatedMember")
 internal class QQAndroidBot constructor(
     context: Context,
     account: BotAccount,
@@ -91,17 +88,13 @@ internal class QQAndroidBot constructor(
             "the request $event is outdated: You had already responded it on another device."
         }
 
-        network.run {
-            NewContact.SystemMsgNewFriend.Action(
-                bot.client,
-                event,
-                accept = true
-            ).sendWithoutExpect()
-            bot.friends.delegate.addLast(bot._lowLevelNewFriend(object : FriendInfo {
-                override val uin: Long get() = event.fromId
-                override val nick: String get() = event.fromNick
-            }))
-        }
+        _lowLevelSolveNewFriendRequestEvent(
+            eventId = event.eventId,
+            fromId = event.fromId,
+            fromNick = event.fromNick,
+            accept = true,
+            blackList = false
+        )
     }
 
     override suspend fun rejectNewFriendRequest(event: NewFriendRequestEvent, blackList: Boolean) {
@@ -117,14 +110,13 @@ internal class QQAndroidBot constructor(
             "the request $event is outdated: You had already responded it on another device."
         }
 
-        network.run {
-            NewContact.SystemMsgNewFriend.Action(
-                bot.client,
-                event,
-                accept = false,
-                blackList = blackList
-            ).sendWithoutExpect()
-        }
+        _lowLevelSolveNewFriendRequestEvent(
+            eventId = event.eventId,
+            fromId = event.fromId,
+            fromNick = event.fromNick,
+            accept = false,
+            blackList = blackList
+        )
     }
 
     @OptIn(LowLevelAPI::class)
@@ -139,26 +131,25 @@ internal class QQAndroidBot constructor(
             "the request $this is outdated: Another operator has already responded it."
         }
 
-        network.run {
-            NewContact.SystemMsgNewGroup.Action(
-                bot.client,
-                event,
-                accept = true
-            ).sendWithoutExpect()
-            event.group.members.delegate.addLast(event.group.newMember(object : MemberInfo {
-                override val nameCard: String get() = ""
-                override val permission: MemberPermission get() = MemberPermission.MEMBER
-                override val specialTitle: String get() = ""
-                override val muteTimestamp: Int get() = 0
-                override val uin: Long get() = event.fromId
-                override val nick: String get() = event.fromNick
-            }))
-        }
+        _lowLevelSolveMemberJoinRequestEvent(
+            eventId = event.eventId,
+            fromId = event.fromId,
+            fromNick = event.fromNick,
+            groupId = event.groupId,
+            accept = true,
+            blackList = false
+        )
     }
 
     @Suppress("DuplicatedCode")
     @OptIn(LowLevelAPI::class)
     override suspend fun rejectMemberJoinRequest(event: MemberJoinRequestEvent, blackList: Boolean) {
+        rejectMemberJoinRequest(event, blackList, "")
+    }
+
+    @Suppress("DuplicatedCode")
+    @OptIn(LowLevelAPI::class)
+    override suspend fun rejectMemberJoinRequest(event: MemberJoinRequestEvent, blackList: Boolean, message: String) {
         checkGroupPermission(event.bot, event.group) { event::class.simpleName ?: "<anonymous class>" }
         check(event.responded.compareAndSet(false, true)) {
             "the request $this has already been responded"
@@ -167,22 +158,26 @@ internal class QQAndroidBot constructor(
         check(!event.group.members.contains(event.fromId)) {
             "the request $this is outdated: Another operator has already responded it."
         }
-        network.run {
-            NewContact.SystemMsgNewGroup.Action(
-                bot.client,
-                event,
-                accept = false,
-                blackList = blackList
-            ).sendWithoutExpect()
-        }
+
+        _lowLevelSolveMemberJoinRequestEvent(
+            eventId = event.eventId,
+            fromId = event.fromId,
+            fromNick = event.fromNick,
+            groupId = event.groupId,
+            accept = false,
+            blackList = blackList,
+            message = message
+        )
     }
 
     private inline fun checkGroupPermission(eventBot: Bot, eventGroup: Group, eventName: () -> String) {
         val group = this.getGroupOrNull(eventGroup.id)
             ?: kotlin.run {
                 if (this == eventBot) {
-                    error("A ${eventName()} is outdated. Group ${eventGroup.id} not found for bot ${this.id}. " +
-                            "This is because bot isn't in the group anymore")
+                    error(
+                        "A ${eventName()} is outdated. Group ${eventGroup.id} not found for bot ${this.id}. " +
+                                "This is because bot isn't in the group anymore"
+                    )
                 } else {
                     error("A ${eventName()} is from bot ${eventBot.id}, but you are trying to respond it using bot ${this.id} who isn't a member of the group ${eventGroup.id}")
                 }
@@ -196,21 +191,22 @@ internal class QQAndroidBot constructor(
         check(event.responded.compareAndSet(false, true)) {
             "the request $this has already been responded"
         }
-        network.run {
-            NewContact.SystemMsgNewGroup.Action(
-                bot.client,
-                event,
-                accept = null,
-                blackList = blackList
-            ).sendWithoutExpect()
-        }
+
+        _lowLevelSolveMemberJoinRequestEvent(
+            eventId = event.eventId,
+            fromId = event.fromId,
+            fromNick = event.fromNick,
+            groupId = event.groupId,
+            accept = null,
+            blackList = blackList
+        )
     }
 
-    override suspend fun acceptInvitedJoinGroupRequest(event: BotInvitedJoinGroupRequestEvent)
-        = solveInvitedJoinGroupRequest(event, accept = true)
+    override suspend fun acceptInvitedJoinGroupRequest(event: BotInvitedJoinGroupRequestEvent) =
+        solveInvitedJoinGroupRequest(event, accept = true)
 
-    override suspend fun ignoreInvitedJoinGroupRequest(event: BotInvitedJoinGroupRequestEvent)
-        = solveInvitedJoinGroupRequest(event, accept = false)
+    override suspend fun ignoreInvitedJoinGroupRequest(event: BotInvitedJoinGroupRequestEvent) =
+        solveInvitedJoinGroupRequest(event, accept = false)
 
 
     private suspend fun solveInvitedJoinGroupRequest(event: BotInvitedJoinGroupRequestEvent, accept: Boolean) {
@@ -222,17 +218,16 @@ internal class QQAndroidBot constructor(
             "the request $this is outdated: Bot has been already in the group."
         }
 
-        network.run {
-            NewContact.SystemMsgNewGroup.Action(
-                bot.client,
-                event,
-                accept = accept
-            ).sendWithoutExpect()
-        }
+        _lowLevelSolveBotInvitedJoinGroupRequestEvent(
+            eventId = event.eventId,
+            invitorId = event.invitorId,
+            groupId = event.groupId,
+            accept = accept
+        )
     }
 }
 
-@OptIn(MiraiInternalAPI::class, MiraiExperimentalAPI::class)
+
 internal abstract class QQAndroidBotBase constructor(
     context: Context,
     private val account: BotAccount,
@@ -250,10 +245,7 @@ internal abstract class QQAndroidBotBase constructor(
     override val id: Long
         get() = account.id
 
-    companion object {
-        @OptIn(UnstableDefault::class)
-        val json = Json(JsonConfiguration(ignoreUnknownKeys = true, encodeDefaults = true))
-    }
+    private inline val json get() = configuration.json
 
     override val friends: ContactList<Friend> = ContactList(LockFreeLinkedList())
 
@@ -295,6 +287,9 @@ internal abstract class QQAndroidBotBase constructor(
     }
 
     override val groups: ContactList<Group> = ContactList(LockFreeLinkedList())
+
+    @JvmField
+    val groupListModifyLock = Mutex()
 
     // internally visible only
     fun getGroupByUin(uin: Long): Group {
@@ -485,7 +480,7 @@ internal abstract class QQAndroidBotBase constructor(
                 headers {
                     append(
                         "cookie",
-                        "uin=o${selfQQ.id}; skey=${client.wLoginSigInfo.sKey.data.encodeToString()}; p_uin=o${selfQQ.id};"
+                        "uin=o${id}; skey=${client.wLoginSigInfo.sKey.data.encodeToString()}; p_uin=o${id};"
                     )
                 }
             }
@@ -519,9 +514,9 @@ internal abstract class QQAndroidBotBase constructor(
                 headers {
                     append(
                         "cookie",
-                        "uin=o${selfQQ.id};" +
+                        "uin=o${id};" +
                                 " skey=${client.wLoginSigInfo.sKey.data.encodeToString()};" +
-                                " p_uin=o${selfQQ.id};" +
+                                " p_uin=o${id};" +
                                 " p_skey=${client.wLoginSigInfo.psKeyMap["qun.qq.com"]?.data?.encodeToString()}; "
                     )
                 }
@@ -547,9 +542,9 @@ internal abstract class QQAndroidBotBase constructor(
                 headers {
                     append(
                         "cookie",
-                        "uin=o${selfQQ.id};" +
+                        "uin=o${id};" +
                                 " skey=${client.wLoginSigInfo.sKey.data.encodeToString()};" +
-                                " p_uin=o${selfQQ.id};" +
+                                " p_uin=o${id};" +
                                 " p_skey=${client.wLoginSigInfo.psKeyMap["qun.qq.com"]?.data?.encodeToString()}; "
                     )
                 }
@@ -576,7 +571,7 @@ internal abstract class QQAndroidBotBase constructor(
                 headers {
                     append(
                         "cookie",
-                        "uin=o${selfQQ.id}; skey=${client.wLoginSigInfo.sKey.data.encodeToString()}; p_uin=o${selfQQ.id};"
+                        "uin=o${id}; skey=${client.wLoginSigInfo.sKey.data.encodeToString()}; p_uin=o${id};"
                     )
                 }
             }
@@ -590,17 +585,19 @@ internal abstract class QQAndroidBotBase constructor(
 
     @LowLevelAPI
     @MiraiExperimentalAPI
-    override suspend fun _lowLevelGetGroupActiveData(groupId: Long): GroupActiveData {
+    override suspend fun _lowLevelGetGroupActiveData(groupId: Long, page: Int): GroupActiveData {
         val data = network.async {
             HttpClient().get<String> {
                 url("https://qqweb.qq.com/c/activedata/get_mygroup_data")
                 parameter("bkn", bkn)
                 parameter("gc", groupId)
-
+                if (page != -1) {
+                    parameter("page", page)
+                }
                 headers {
                     append(
                         "cookie",
-                        "uin=o${selfQQ.id}; skey=${client.wLoginSigInfo.sKey.data.encodeToString()}; p_uin=o${selfQQ.id};"
+                        "uin=o${id}; skey=${client.wLoginSigInfo.sKey.data.encodeToString()}; p_uin=o${id};"
                     )
                 }
             }
@@ -714,13 +711,93 @@ internal abstract class QQAndroidBotBase constructor(
         }
     }
 
-    @Suppress("DEPRECATION")
+
+    @LowLevelAPI
+    @MiraiExperimentalAPI
+    override suspend fun _lowLevelSolveNewFriendRequestEvent(
+        eventId: Long,
+        fromId: Long,
+        fromNick: String,
+        accept: Boolean,
+        blackList: Boolean
+    ) {
+        network.apply {
+            NewContact.SystemMsgNewFriend.Action(
+                bot.client,
+                eventId = eventId,
+                fromId = fromId,
+                accept = accept,
+                blackList = blackList
+            ).sendWithoutExpect()
+            bot.friends.delegate.addLast(bot._lowLevelNewFriend(object : FriendInfo {
+                override val uin: Long get() = fromId
+                override val nick: String get() = fromNick
+            }))
+        }
+    }
+
+    @LowLevelAPI
+    @MiraiExperimentalAPI
+    override suspend fun _lowLevelSolveBotInvitedJoinGroupRequestEvent(
+        eventId: Long,
+        invitorId: Long,
+        groupId: Long,
+        accept: Boolean
+    ) {
+        network.run {
+            NewContact.SystemMsgNewGroup.Action(
+                bot.client,
+                eventId = eventId,
+                fromId = invitorId,
+                groupId = groupId,
+                isInvited = true,
+                accept = accept
+            ).sendWithoutExpect()
+        }
+    }
+
+    @LowLevelAPI
+    @MiraiExperimentalAPI
+    override suspend fun _lowLevelSolveMemberJoinRequestEvent(
+        eventId: Long,
+        fromId: Long,
+        fromNick: String,
+        groupId: Long,
+        accept: Boolean?,
+        blackList: Boolean,
+        message: String
+    ) {
+        network.apply {
+            NewContact.SystemMsgNewGroup.Action(
+                bot.client,
+                eventId = eventId,
+                fromId = fromId,
+                groupId = groupId,
+                isInvited = false,
+                accept = accept,
+                blackList = blackList,
+                message = message
+            ).sendWithoutExpect()
+            if (accept ?: return)
+                groups[groupId].apply {
+                    members.delegate.addLast(newMember(object : MemberInfo {
+                        override val nameCard: String get() = ""
+                        override val permission: MemberPermission get() = MemberPermission.MEMBER
+                        override val specialTitle: String get() = ""
+                        override val muteTimestamp: Int get() = 0
+                        override val uin: Long get() = fromId
+                        override val nick: String get() = fromNick
+                    }))
+                }
+        }
+    }
+
+    @Suppress("DEPRECATION", "OverridingDeprecatedMember")
     override suspend fun queryImageUrl(image: Image): String = when (image) {
-        is OnlineFriendImageImpl -> image.originUrl
-        is OnlineGroupImageImpl -> image.originUrl
-        is OfflineGroupImage -> "http://gchat.qpic.cn/gchatpic_new/${id}/0-0-${image.imageId.substring(1..36).replace("-", "")}/0?term=2"
-        is OfflineFriendImage -> "http://c2cpicdw.qpic.cn/offpic_new/${id}/${image.imageId}/0?term=2"
-        else -> error("unsupported image class: ${image::class.simpleName}")
+        is ConstOriginUrlAware -> image.originUrl
+        is DeferredOriginUrlAware -> image.getUrl(this)
+        is SuspendDeferredOriginUrlAware -> image.getUrl(this)
+        else -> error("Internal error: unsupported image class: ${image::class.simpleName}")
     }
 
     override fun constructMessageSource(
@@ -770,12 +847,6 @@ internal abstract class QQAndroidBotBase constructor(
 
 internal val EMPTY_BYTE_ARRAY = ByteArray(0)
 
-@Suppress("DEPRECATION")
-@OptIn(MiraiInternalAPI::class)
-internal expect fun io.ktor.utils.io.ByteReadChannel.toKotlinByteReadChannel(): ByteReadChannel
-
-
-@OptIn(MiraiInternalAPI::class)
 private fun RichMessage.Templates.longMessage(brief: String, resId: String, timeSeconds: Long): RichMessage {
     val limited: String = if (brief.length > 30) {
         brief.take(30) + "…"

@@ -13,19 +13,77 @@
 
 package net.mamoe.mirai.message.data
 
+import net.mamoe.mirai.Bot
+import net.mamoe.mirai.utils.ExternalImage
 import net.mamoe.mirai.utils.MiraiExperimentalAPI
-import net.mamoe.mirai.utils.MiraiInternalAPI
+import net.mamoe.mirai.utils.SinceMirai
 import kotlin.jvm.JvmMultifileClass
 import kotlin.jvm.JvmName
 import kotlin.jvm.JvmSynthetic
 import kotlin.native.concurrent.SharedImmutable
 
+// region image
+
+/**
+ * 所有 [Image] 实现的基类.
+ */
+internal abstract class AbstractImage : Image { // make sealed in 1.3.0 ?
+    @Deprecated(
+        """
+        不要自行实现 Image, 它必须由协议模块实现, 否则会无法发送也无法解析.
+    """, level = DeprecationLevel.HIDDEN
+    )
+    @Suppress("PropertyName", "DeprecatedCallableAddReplaceWith")
+    @get:JvmSynthetic
+    final override val DoNotImplementThisClass: Nothing?
+        get() = error("stub")
+
+    private var _stringValue: String? = null
+        get() = field ?: kotlin.run {
+            field = "[mirai:image:$imageId]"
+            field
+        }
+
+    final override fun toString(): String = _stringValue!!
+    final override fun contentToString(): String = "[图片]"
+}
+
+internal interface ConstOriginUrlAware : Image {
+    val originUrl: String
+}
+
+internal interface DeferredOriginUrlAware : Image {
+    fun getUrl(bot: Bot): String
+}
+
+internal interface SuspendDeferredOriginUrlAware : Image {
+    suspend fun getUrl(bot: Bot): String
+}
+
+/**
+ * 由 [ExternalImage] 委托的 [Image] 类型.
+ */
+@SinceMirai("1.1.0")
+@MiraiExperimentalAPI("Will be renamed to OfflineImage on 1.2.0")
+@Suppress("DEPRECATION_ERROR")
+internal class ExperimentalDeferredImage internal constructor(
+    @Suppress("CanBeParameter") private val externalImage: ExternalImage // for future use
+) : AbstractImage(), SuspendDeferredOriginUrlAware {
+    override suspend fun getUrl(bot: Bot): String {
+        TODO()
+    }
+
+    override val imageId: String = externalImage.calculateImageResourceId()
+}
+
+internal val firstOnlineBotInstance: Bot get() = Bot.botInstancesSequence.firstOrNull() ?: error("No Bot available")
+
+// endergion
+
 /////////////////////////
 //// IMPLEMENTATIONS ////
 /////////////////////////
 
-
-@OptIn(MiraiInternalAPI::class)
 private fun Message.hasDuplicationOfConstrain(key: Message.Key<*>): Boolean {
     return when (this) {
         is SingleMessage -> (this as? ConstrainSingle<*>)?.key == key
@@ -129,7 +187,6 @@ internal fun Message.followedByImpl(tail: Message): MessageChain {
 }
 
 
-@OptIn(MiraiExperimentalAPI::class)
 @JvmSynthetic
 internal fun Sequence<SingleMessage>.constrainSingleMessages(): List<SingleMessage> {
     val iterator = this.iterator()
@@ -169,7 +226,7 @@ internal inline fun constrainSingleMessagesImpl(iterator: () -> SingleMessage?):
 }
 
 @JvmSynthetic
-@OptIn(MiraiExperimentalAPI::class)
+
 internal fun Iterable<SingleMessage>.constrainSingleMessages(): List<SingleMessage> {
     val iterator = this.iterator()
     return constrainSingleMessagesImpl supplier@{
@@ -189,7 +246,6 @@ internal inline fun <T> List<T>.indexOfFirst(offset: Int, predicate: (T) -> Bool
 }
 
 
-@OptIn(MiraiExperimentalAPI::class)
 @JvmSynthetic
 @Suppress("UNCHECKED_CAST", "DEPRECATION_ERROR", "DEPRECATION")
 internal fun <M : Message> MessageChain.firstOrNullImpl(key: Message.Key<M>): M? = when (key) {
@@ -245,8 +301,8 @@ internal fun <M : Message> MessageChain.firstOrNullImpl(key: Message.Key<M>): M?
  * 使用 [Collection] 作为委托的 [MessageChain]
  */
 internal class MessageChainImplByCollection constructor(
-    internal val delegate: Collection<SingleMessage> // 必须 constrainSingleMessages, 且为 immutable
-) : Message, Iterable<SingleMessage>, MessageChain {
+    internal val delegate: List<SingleMessage> // 必须 constrainSingleMessages, 且为 immutable
+) : Message, MessageChain, List<SingleMessage> by delegate {
     override val size: Int get() = delegate.size
     override fun iterator(): Iterator<SingleMessage> = delegate.iterator()
 
@@ -266,15 +322,7 @@ internal class MessageChainImplByCollection constructor(
  */
 internal class MessageChainImplBySequence constructor(
     delegate: Sequence<SingleMessage> // 可以有重复 ConstrainSingle
-) : Message, Iterable<SingleMessage>, MessageChain {
-    override val size: Int by lazy { collected.size }
-
-    /**
-     * [Sequence] 可能只能消耗一遍, 因此需要先转为 [List]
-     */
-    private val collected: List<SingleMessage> by lazy { delegate.constrainSingleMessages() }
-    override fun iterator(): Iterator<SingleMessage> = collected.iterator()
-
+) : Message, Iterable<SingleMessage>, MessageChain, List<SingleMessage> by delegate.constrainSingleMessages() {
     private var toStringTemp: String? = null
         get() = field ?: this.joinToString("") { it.toString() }.also { field = it }
 
@@ -291,11 +339,9 @@ internal class MessageChainImplBySequence constructor(
  */
 internal class SingleMessageChainImpl constructor(
     internal val delegate: SingleMessage
-) : Message, Iterable<SingleMessage>, MessageChain {
-    override val size: Int get() = 1
+) : Message, MessageChain, List<SingleMessage> by listOf(delegate) {
     override fun toString(): String = this.delegate.toString()
     override fun contentToString(): String = this.delegate.contentToString()
-    override fun iterator(): Iterator<SingleMessage> = iterator { yield(delegate) }
 }
 
 

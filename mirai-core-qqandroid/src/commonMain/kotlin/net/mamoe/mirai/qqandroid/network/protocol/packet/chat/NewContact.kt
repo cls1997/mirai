@@ -1,17 +1,29 @@
+/*
+ * Copyright 2020 Mamoe Technologies and contributors.
+ *
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
+ *
+ * https://github.com/mamoe/mirai/blob/master/LICENSE
+ */
+
+@file:Suppress("INVISIBLE_MEMBER")
+
 package net.mamoe.mirai.qqandroid.network.protocol.packet.chat
 
 import kotlinx.io.core.ByteReadPacket
 import kotlinx.io.core.readBytes
-import net.mamoe.mirai.contact.Group
-import net.mamoe.mirai.event.events.BotInvitedJoinGroupRequestEvent
-import net.mamoe.mirai.event.events.MemberJoinRequestEvent
-import net.mamoe.mirai.event.events.NewFriendRequestEvent
+import net.mamoe.mirai.event.events.*
+import net.mamoe.mirai.getGroupOrNull
 import net.mamoe.mirai.qqandroid.QQAndroidBot
+import net.mamoe.mirai.qqandroid.message.contextualBugReportException
 import net.mamoe.mirai.qqandroid.network.Packet
 import net.mamoe.mirai.qqandroid.network.QQAndroidClient
 import net.mamoe.mirai.qqandroid.network.protocol.data.proto.Structmsg
 import net.mamoe.mirai.qqandroid.network.protocol.packet.OutgoingPacketFactory
 import net.mamoe.mirai.qqandroid.network.protocol.packet.buildOutgoingUniPacket
+import net.mamoe.mirai.qqandroid.network.protocol.packet.chat.receive.getNewGroup
+import net.mamoe.mirai.qqandroid.utils._miraiContentToString
 import net.mamoe.mirai.qqandroid.utils.io.serialization.loadAs
 import net.mamoe.mirai.qqandroid.utils.io.serialization.writeProtoBuf
 
@@ -45,17 +57,15 @@ internal class NewContact {
         override suspend fun ByteReadPacket.decode(bot: QQAndroidBot): NewFriendRequestEvent? {
             readBytes().loadAs(Structmsg.RspSystemMsgNew.serializer()).run {
                 val struct = friendmsgs?.firstOrNull()
-                return if (struct == null) null else {
-                    struct.msg?.run {
-                        NewFriendRequestEvent(
-                            bot,
-                            struct.msgSeq,
-                            msgAdditional,
-                            struct.reqUin,
-                            Group.calculateGroupUinByGroupCode(groupCode),
-                            reqUinNick
-                        )
-                    }
+                return struct?.msg?.run {
+                    NewFriendRequestEvent(
+                        bot,
+                        struct.msgSeq,
+                        msgAdditional,
+                        struct.reqUin,
+                        groupCode,
+                        reqUinNick
+                    )
                 }
             }
         }
@@ -64,7 +74,8 @@ internal class NewContact {
 
             operator fun invoke(
                 client: QQAndroidClient,
-                event: NewFriendRequestEvent,
+                eventId: Long,
+                fromId: Long,
                 accept: Boolean,
                 blackList: Boolean = false
             ) =
@@ -79,8 +90,8 @@ internal class NewContact {
                                 remark = "",
                                 blacklist = !accept && blackList
                             ),
-                            msgSeq = event.eventId,
-                            reqUin = event.fromId,
+                            msgSeq = eventId,
+                            reqUin = fromId,
                             srcId = 6,
                             subSrcId = 7,
                             subType = 1
@@ -134,35 +145,69 @@ internal class NewContact {
             readBytes().loadAs(Structmsg.RspSystemMsgNew.serializer()).run {
                 val struct = groupmsgs?.firstOrNull()
 
-                return if (struct == null) null else {
-                    struct.msg?.run<Structmsg.SystemMsg, Packet> {
-                        when (c2cInviteJoinGroupFlag) {
-                            1 -> {
-                                // 被邀请入群
-                                BotInvitedJoinGroupRequestEvent(
-                                    bot,
-                                    struct.msgSeq,
-                                    actionUin,
-                                    Group.calculateGroupUinByGroupCode(groupCode),
-                                    groupName,
-                                    actionUinNick
+                return struct?.msg?.run {
+                    //this.soutv("SystemMsg")
+                    when (subType) {
+                        1 -> { // 处理被邀请入群 或 处理成员入群申请
+                            when (groupMsgType) {
+                                1 -> {
+                                    // 成员申请入群
+                                    MemberJoinRequestEvent(
+                                        bot, struct.msgSeq, msgAdditional,
+                                        struct.reqUin, groupCode, groupName, reqUinNick
+                                    )
+                                }
+                                2 -> {
+                                    // 被邀请入群
+                                    BotInvitedJoinGroupRequestEvent(
+                                        bot, struct.msgSeq, actionUin,
+                                        groupCode, groupName, actionUinNick
+                                    )
+                                }
+                                else -> throw contextualBugReportException(
+                                    "parse SystemMsgNewGroup, subType=1",
+                                    this._miraiContentToString(),
+                                    additional = "并尽量描述此时机器人是否正被邀请加入群, 或者是有有新群员加入此群"
                                 )
                             }
-                            0 -> {
-                                // 成员申请入群
-                                MemberJoinRequestEvent(
-                                    bot,
-                                    struct.msgSeq,
-                                    msgAdditional,
-                                    struct.reqUin,
-                                    Group.calculateGroupUinByGroupCode(groupCode),
-                                    groupName,
-                                    reqUinNick
-                                )
-                            }
-                            else -> throw IllegalStateException("Unknown c2cInviteJoinGroupFlag: $c2cInviteJoinGroupFlag in SystemMsgNewGroup packet")
                         }
-                    } as Packet // 没有 as Packet 垃圾 kotlin 会把类型推断为Any
+                        2 -> { // 被邀请入群, 自动同意, 不需处理
+
+                            val group = bot.getNewGroup(groupCode) ?: return null
+                            val invitor = group[actionUin]
+
+                            BotJoinGroupEvent.Invite(invitor)
+                        }
+                        3 -> { // 已被请他管理员处理
+                            null
+                        }
+                        5 -> {
+                            val group = bot.getGroupOrNull(groupCode) ?: return null
+                            when (groupMsgType) {
+                                13 -> { // 成员主动退出, 机器人是管理员, 接到通知
+                                    // 但无法获取是哪个成员.
+                                    null
+                                }
+                                7 -> { // 机器人被踢
+                                    val operator = group[actionUin]
+                                    BotLeaveEvent.Kick(operator)
+                                }
+                                else -> {
+                                    throw contextualBugReportException(
+                                        "解析 NewContact.SystemMsgNewGroup, subType=5",
+                                        this._miraiContentToString(),
+                                        null,
+                                        "并描述此时机器人是否被踢出群等"
+                                    )
+                                }
+                            }
+                        }
+                        else -> throw contextualBugReportException(
+                            "parse SystemMsgNewGroup",
+                            forDebug = this._miraiContentToString(),
+                            additional = "并尽量描述此时机器人是否正被邀请加入群, 或者是有有新群员加入此群"
+                        )
+                    }
                 }
             }
         }
@@ -171,9 +216,13 @@ internal class NewContact {
 
             operator fun invoke(
                 client: QQAndroidClient,
-                event: MemberJoinRequestEvent,
+                eventId: Long,
+                fromId: Long,
+                groupId: Long,
+                isInvited: Boolean,
                 accept: Boolean?,
-                blackList: Boolean = false
+                blackList: Boolean = false,
+                message: String = ""
             ) =
                 buildOutgoingUniPacket(client) {
                     writeProtoBuf(
@@ -185,41 +234,17 @@ internal class NewContact {
                                     true -> 11 // accept
                                     false -> 12 // reject
                                 },
-                                groupCode = Group.calculateGroupCodeByGroupUin(event.groupId),
-                                msg = "",
+                                groupCode = groupId,
+                                msg = message,
                                 remark = "",
                                 blacklist = blackList
                             ),
-                            groupMsgType = 1,
+                            groupMsgType = if (isInvited) 2 else 1,
                             language = 1000,
-                            msgSeq = event.eventId,
-                            reqUin = event.fromId,
+                            msgSeq = eventId,
+                            reqUin = fromId,
                             srcId = 3,
-                            subSrcId = 31,
-                            subType = 1
-                        )
-                    )
-                }
-
-            operator fun invoke(
-                client: QQAndroidClient,
-                event: BotInvitedJoinGroupRequestEvent,
-                accept: Boolean
-            ) =
-                buildOutgoingUniPacket(client) {
-                    writeProtoBuf(
-                        Structmsg.ReqSystemMsgAction.serializer(),
-                        Structmsg.ReqSystemMsgAction(
-                            actionInfo = Structmsg.SystemMsgActionInfo(
-                                type = if (accept) 11 else 12,
-                                groupCode = Group.calculateGroupCodeByGroupUin(event.groupId)
-                            ),
-                            groupMsgType = 2,
-                            language = 1000,
-                            msgSeq = event.eventId,
-                            reqUin = event.invitorId,
-                            srcId = 3,
-                            subSrcId = 10016,
+                            subSrcId = if (isInvited) 10016 else 31,
                             subType = 1
                         )
                     )

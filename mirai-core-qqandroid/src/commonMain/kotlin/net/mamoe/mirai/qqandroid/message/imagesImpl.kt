@@ -7,6 +7,8 @@
  * https://github.com/mamoe/mirai/blob/master/LICENSE
  */
 
+@file:Suppress("DEPRECATION_ERROR")
+
 package net.mamoe.mirai.qqandroid.message
 
 import net.mamoe.mirai.message.data.*
@@ -20,7 +22,10 @@ internal class OnlineGroupImageImpl(
 OnlineGroupImage() {
     override val imageId: String = ExternalImage.generateImageId(delegate.md5)
     override val originUrl: String
-        get() = "http://gchat.qpic.cn" + delegate.origUrl
+        get() = if (delegate.origUrl.isBlank()) {
+            "http://gchat.qpic.cn/gchatpic_new/0/0-0-${imageId.substring(1..36)
+                .replace("-", "")}/0?term=2"
+        } else "http://gchat.qpic.cn" + delegate.origUrl
 
     override fun equals(other: Any?): Boolean {
         return other is OnlineGroupImageImpl && other.imageId == this.imageId
@@ -37,7 +42,7 @@ internal class OnlineFriendImageImpl(
 OnlineFriendImage() {
     override val imageId: String get() = delegate.resId
     override val originUrl: String
-        get() = if (delegate.origUrl.isNotEmpty()) {
+        get() = if (delegate.origUrl.isNotBlank()) {
             "http://c2cpicdw.qpic.cn" + this.delegate.origUrl
         } else {
             "http://c2cpicdw.qpic.cn/offpic_new/0/" + delegate.resId + "/0?term=2"

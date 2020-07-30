@@ -40,6 +40,14 @@ kotlin {
         all {
             languageSettings.enableLanguageFeature("InlineClasses")
             languageSettings.useExperimentalAnnotation("kotlin.Experimental")
+            languageSettings.useExperimentalAnnotation("net.mamoe.mirai.utils.MiraiInternalAPI")
+            languageSettings.useExperimentalAnnotation("net.mamoe.mirai.utils.MiraiExperimentalAPI")
+            languageSettings.useExperimentalAnnotation("net.mamoe.mirai.LowLevelAPI")
+            languageSettings.useExperimentalAnnotation("kotlin.ExperimentalUnsignedTypes")
+            languageSettings.useExperimentalAnnotation("kotlin.experimental.ExperimentalTypeInference")
+            languageSettings.useExperimentalAnnotation("kotlin.time.ExperimentalTime")
+            languageSettings.useExperimentalAnnotation("kotlin.contracts.ExperimentalContracts")
+            languageSettings.progressiveMode = true
 
             dependencies {
                 api(project(":mirai-core"))
@@ -86,7 +94,7 @@ kotlin {
         val jvmMain by getting {
             dependencies {
                 runtimeOnly(files("build/classes/kotlin/jvm/main")) // classpath is not properly set by IDE
-                //    api(kotlinx("coroutines-debug", "1.3.5"))
+                //    api(kotlinx("coroutines-debug", Versions.Kotlin.coroutines))
                 api("moe.him188:jcekt:${Versions.jcekt}")
                 api(kotlinx("serialization-runtime", Versions.Kotlin.serialization))
                 //api(kotlinx("serialization-protobuf", Versions.Kotlin.serialization))
